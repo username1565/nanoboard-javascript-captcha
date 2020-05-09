@@ -1,6 +1,73 @@
 // Written in 2014 by Dmitry Chestnykh.
 // Public domain.
 
+
+var to_b58 = function(
+    B,            //Uint8Array raw byte input
+    A             //Base58 characters (i.e. "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+) {
+    var d = [],   //the array for storing the stream of base58 digits
+        s = "",   //the result string variable that will be returned
+        i,        //the iterator variable for the byte input
+        j,        //the iterator variable for the base58 digit array (d)
+        c,        //the carry amount variable that is used to overflow from the current base58 digit to the next base58 digit
+        n;        //a temporary placeholder variable for the current base58 digit
+    for(i in B) { //loop through each byte in the input stream
+        j = 0,                           //reset the base58 digit iterator
+        c = B[i];                        //set the initial carry amount equal to the current byte amount
+        s += c || s.length ^ i ? "" : 1; //prepend the result string with a "1" (0 in base58) if the byte stream is zero and non-zero bytes haven't been seen yet (to ensure correct decode length)
+        while(j in d || c) {             //start looping through the digits until there are no more digits and no carry amount
+            n = d[j];                    //set the placeholder for the current base58 digit
+            n = n ? n * 256 + c : c;     //shift the current base58 one byte and add the carry amount (or just add the carry amount if this is a new digit)
+            c = n / 58 | 0;              //find the new carry amount (floored integer of current digit divided by 58)
+            d[j] = n % 58;               //reset the current base58 digit to the remainder (the carry amount will pass on the overflow)
+            j++                          //iterate to the next base58 digit
+        }
+    }
+    while(j--)        //since the base58 digits are backwards, loop through them in reverse order
+        s += A[d[j]]; //lookup the character associated with each base58 digit
+    return s          //return the final base58 string
+}
+
+
+var from_b58 = function(
+    S,            //Base58 encoded string input
+    A             //Base58 characters (i.e. "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+) {
+    var d = [],   //the array for storing the stream of decoded bytes
+        b = [],   //the result byte array that will be returned
+        i,        //the iterator variable for the base58 string
+        j,        //the iterator variable for the byte array (d)
+        c,        //the carry amount variable that is used to overflow from the current byte to the next byte
+        n;        //a temporary placeholder variable for the current byte
+    for(i in S) { //loop through each base58 character in the input string
+        j = 0,                             //reset the byte iterator
+        c = A.indexOf( S[i] );             //set the initial carry amount equal to the current base58 digit
+        if(c < 0)                          //see if the base58 digit lookup is invalid (-1)
+            return undefined;              //if invalid base58 digit, bail out and return undefined
+        c || b.length ^ i ? i : b.push(0); //prepend the result array with a zero if the base58 digit is zero and non-zero characters haven't been seen yet (to ensure correct decode length)
+        while(j in d || c) {               //start looping through the bytes until there are no more bytes and no carry amount
+            n = d[j];                      //set the placeholder for the current byte
+            n = n ? n * 58 + c : c;        //shift the current byte 58 units and add the carry amount (or just add the carry amount if this is a new byte)
+            c = n >> 8;                    //find the new carry amount (1-byte shift of current byte value)
+            d[j] = n % 256;                //reset the current byte to the remainder (the carry amount will pass on the overflow)
+            j++                            //iterate to the next byte
+        }
+    }
+    while(j--)               //since the byte array is backwards, loop through it in reverse order
+        b.push( d[j] );      //append each byte to the result
+    return new Uint8Array(b) //return the final byte array in Uint8Array format
+}
+
+function buf2hex(buffer) { // buffer is an ArrayBuffer
+  return Array.prototype.map.call(new Uint8Array(buffer), x => ('00' + x.toString(16)).slice(-2)).join('');
+}
+
+// EXAMPLE:
+//var buffer = new Uint8Array([ 4, 8, 12, 16 ]).buffer;
+//console.log(buf2hex(buffer)); // = 04080c10
+
+
 (function(m) {
 "use strict";
 
@@ -432,6 +499,14 @@ app.hash.view = function(ctrl) {
   ];
 };
 
+function isBase64(str) {
+    try {
+        return btoa(atob(str)) == str;
+    } catch (err) {
+        return false;
+    }
+}
+
 // Sign page.
 
 app.sign = {};
@@ -446,12 +521,46 @@ app.sign.controller = function() {
   this.success = m.prop('');
   this.status = m.prop('sign');
 
-  this.generateKeyPair = function() {
-    var keys = nacl.sign.keyPair();
+  this.clear = function(){this.secretKey(''); this.publicKey('');}.bind(this);
+  
+  this.generateKeyPair = function(len, priv) {
+	len = len || 32;
+	console.log('priv', priv);
+    if			(len === 64)
+	{
+//		var keys = nacl.sign.keyPair.fromSeed(new Uint8Array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]));		//from specified secretKey
+		if(priv !== '' && isBase64(priv)){
+			var keys = nacl.sign.keyPair.fromSeed((nacl.util.decodeBase64(priv)).slice(0, 32));		//from specified secretKey
+		}else{
+			var keys = nacl.sign.keyPair();		//for sign, working...					(nacl-fast.js: nacl.sign, nacl.sign.open, nacl.sign.detached, nacl.sign.detached.verify)
+		}
+	}
+	else if		(len === 32)
+	{
+//   	 var keys = nacl.box.keyPair.fromSecretKey(new Uint8Array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]));	//corresponding with Tox keypair (nacl.sign32, nacl.verify32)
+		if(priv !== '' && isBase64(priv)){
+			var keys = nacl.box.keyPair.fromSecretKey((nacl.util.decodeBase64(priv)).slice(0, 32));	//corresponding with Tox keypair (nacl.sign32, nacl.verify32)
+		}else{
+			var keys = nacl.box.keyPair();		//corresponding with Tox keypair		(nacl-fast.js: nacl.sign32, nacl.verify32)
+		}
+	}
+
+//	console.log('keys', keys);
+
     this.secretKey(nacl.util.encodeBase64(keys.secretKey));
     this.publicKey(nacl.util.encodeBase64(keys.publicKey));
-  }.bind(this);
 
+	var b58str = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+	
+	console.log('keys.secretKey', keys.secretKey);
+	console.log('buf2hex((keys.secretKey).buffer)', buf2hex((keys.secretKey).buffer));
+	console.log('keys.publicKey', keys.publicKey);
+	console.log('buf2hex((keys.publicKey).buffer)', buf2hex((keys.publicKey).buffer));
+	console.log('\n\n\n');
+	console.log('buf2hex(from_b58(this.secretKey, b58str).buffer): ', buf2hex(from_b58(to_b58(	(keys.secretKey).slice(0, 32),	b58str	), b58str).buffer), '\nto_b58: ', to_b58(	(keys.secretKey).slice(0, 32),	b58str	), 'b64:', this.secretKey());
+	console.log('buf2hex(from_b58(keys.publicKey, b58str).buffer): ', buf2hex(from_b58(to_b58(	keys.publicKey,					b58str	), b58str).buffer), '\nto_b58: ', to_b58(	keys.publicKey,					b58str	), 'b64:', this.publicKey());
+  }.bind(this);
+  
   this.decodePublicKey = function() {
     try {
       var k = nacl.util.decodeBase64(this.publicKey());
@@ -469,7 +578,7 @@ app.sign.controller = function() {
   this.decodeSecretKey = function() {
     try {
       var k = nacl.util.decodeBase64(this.secretKey());
-      if (k.length != nacl.sign.secretKeyLength) {
+      if (k.length != nacl.sign.secretKeyLength && k.length != 32) {
         this.error('Bad secret key length: must be ' + nacl.sign.secretKeyLength + ' bytes');
         return null;
       }
@@ -499,23 +608,49 @@ app.sign.controller = function() {
     e.preventDefault();
     this.error('');
     if (!(sk = this.decodeSecretKey())) return;
-    this.signature(nacl.util.encodeBase64(nacl.sign.detached(nacl.util.decodeUTF8(this.message()), sk)));
+//	console.log('this.sign: secretKey, sk = ', sk, 'sk.length', sk.length);
+	if			( sk.length === 64 ){
+		this.signature(
+			nacl.util.encodeBase64(
+				nacl.sign.detached(nacl.util.decodeUTF8(this.message()), sk)				//nacl.sign
+			)
+		);
+	}else if	( sk.length == 32 ){
+		this.signature(
+			nacl.util.encodeBase64(
+				nacl.sign32(sk, nacl.util.decodeUTF8(this.message()))						//nacl.box
+			)
+		);
+	}else{
+		console.log('Invalid sk.length: ', sk.length, '. Must to be 64 or 32 bytes...');
+	}
   }.bind(this);
 
   this.verify = function(e) {
     var pk, s, m;
     e.preventDefault();
     this.error('');
+	
     if (!(s = this.decodeSignature())) return;
     if (!(pk = this.decodePublicKey())) return;
-    if (!nacl.sign.detached.verify(nacl.util.decodeUTF8(this.message()), s, pk)) {
-      this.error('Failed to verify signature');
-      return;
-    } else {
+	
+	if (nacl.sign.detached.verify(nacl.util.decodeUTF8(this.message()), s, pk)) {		//nacl.sign
+		console.log('nacl.sign.detached.verify()');
       this.success('Verified');
       this.status('verified');
       return;
     }
+	else if (nacl.verify32(pk, nacl.util.decodeUTF8(this.message()), s)) {				//nacl.box
+		console.log('nacl.verify32.verified()');
+      this.success('Verified');
+      this.status('verified');
+      return;
+    }
+	else {
+      this.error('Failed to verify signature');
+      return;
+    }
+	
   }.bind(this);
 
 };
@@ -529,7 +664,9 @@ app.sign.keyView = function(ctrl) {
           m('.input-group', [
             m('input.form-control[name=secretKey]', {value: ctrl.secretKey(), onchange: m.withAttr('value', ctrl.secretKey)}),
             m('span.input-group-btn', [
-              m('a.btn.btn-default', {onclick: ctrl.generateKeyPair}, 'Random')
+              m('a.btn.btn-default', {onclick: function(){ctrl.generateKeyPair(64, ctrl.secretKey());}, title: "nacl.sign.keyPair 	(secretKey 64 bytes)"	},		'Random64'),
+              m('a.btn.btn-default', {onclick: function(){ctrl.generateKeyPair(32, ctrl.secretKey());}, title: "nacl.box.keyPair 	(secretKey 32 bytes)"	},		'Random32'),
+              m('a.btn.btn-default', {onclick: ctrl.clear, title: "clear secretKey to generate it randomly"	},		'clear'),
             ]),
           ]),
         ]),
